@@ -2,22 +2,26 @@ use std::arch::asm;
 
 #[inline(always)]
 pub unsafe fn set() {
-    asm!(
-        "nop", "nop", "nop",
-        ".word 0x00201000 + ({op} << 5) + {operand}",
-        op = const 17,
-        operand = const 0,
-    );
+    unsafe {
+        asm!(
+            "nop", "nop", "nop",
+            ".word 0x00201000 + ({op} << 5) + {operand}",
+            op = const 17,
+            operand = const 0,
+        );
+    }
 }
 
 #[inline(always)]
 pub unsafe fn clr() {
-    asm!(
-        "nop", "nop", "nop",
-        ".word 0x00201000 + ({op} << 5) + {operand}",
-        op = const 17,
-        operand = const 1,
-    );
+    unsafe {
+        asm!(
+            "nop", "nop", "nop",
+            ".word 0x00201000 + ({op} << 5) + {operand}",
+            op = const 17,
+            operand = const 1,
+        );
+    }
 }
 
 pub unsafe fn op<const OP: u8>(operand: u64) {
@@ -32,32 +36,32 @@ pub unsafe fn op<const OP: u8>(operand: u64) {
 
 pub unsafe fn ldx<T>(regidx: u8, ptr: *const T) {
     let gpr = (((regidx & 0x7) as u64) << 56) | (ptr as u64 & 0x00ff_ffff_ffff_ffff);
-    op::<0>(gpr);
+    unsafe { op::<0>(gpr) };
 }
 
 pub unsafe fn ldy<T>(regidx: u8, ptr: *const T) {
     let gpr = (((regidx & 0x7) as u64) << 56) | (ptr as u64 & 0x00ff_ffff_ffff_ffff);
-    op::<1>(gpr);
+    unsafe { op::<1>(gpr) };
 }
 
 pub unsafe fn stx<T>(regidx: u8, ptr: *mut T) {
     let gpr = (((regidx & 0x7) as u64) << 56) | (ptr as u64 & 0x00ff_ffff_ffff_ffff);
-    op::<2>(gpr);
+    unsafe { op::<2>(gpr) };
 }
 
 pub unsafe fn sty<T>(regidx: u8, ptr: *mut T) {
     let gpr = (((regidx & 0x7) as u64) << 56) | (ptr as u64 & 0x00ff_ffff_ffff_ffff);
-    op::<3>(gpr);
+    unsafe { op::<3>(gpr) };
 }
 
 pub unsafe fn ldz<T>(zrow: u8, ptr: *const T) {
     let gpr = (((zrow & 0x3f) as u64) << 56) | (ptr as u64 & 0x00ff_ffff_ffff_ffff);
-    op::<4>(gpr);
+    unsafe { op::<4>(gpr) };
 }
 
 pub unsafe fn stz<T>(zrow: u8, ptr: *mut T) {
     let gpr = (((zrow & 0x3f) as u64) << 56) | (ptr as u64 & 0x00ff_ffff_ffff_ffff);
-    op::<5>(gpr);
+    unsafe { op::<5>(gpr) };
 }
 
 /// Performs a 16 element outer product into 16x16 matrix.
@@ -66,47 +70,81 @@ pub unsafe fn stz<T>(zrow: u8, ptr: *mut T) {
 /// looking at rows: {1, 5, 9, 13, ect...}
 ///
 /// `zrow`    - Chooses which of the 4 output matrixes to FMA into.
-/// `xoffset` - Chooses which f32 index of X register to start from. Wraps.
-/// `yoffset` - Chooses which f32 index of Y register to start from. Wraps.
+/// `xoffset` - Byte offset into X registers. 64 bytes per register (512 bits). Wraps.
+/// `yoffset` - Byte offset into Y registers. 64 bytes per register (512 bits). Wraps.
 pub unsafe fn fma32(zrow: u8, xoffset: u16, yoffset: u16) {
     let gpr = (((zrow & 0x3f) as u64) << 20) | (((xoffset & 0x01ff) as u64) << 10) | (yoffset & 0x01ff) as u64;
-    op::<12>(gpr);
+    unsafe { op::<12>(gpr) };
+}
+
+pub unsafe fn printX() {
+    for ridx in 0..8 {
+        let mut x: [f32; 16] = [0.0; 16];
+        unsafe { stx(ridx, x.as_mut_ptr().into()) };
+        println!("X[{}]: {:?}", ridx, x);
+    }
+}
+
+pub unsafe fn printY() {
+    for ridx in 0..8 {
+        let mut y: [f32; 16] = [0.0; 16];
+        unsafe { sty(ridx, y.as_mut_ptr().into()) };
+        println!("Y[{}]: {:?}", ridx, y);
+    }
+}
+
+pub unsafe fn printZ() {
+    for ridx in 0..64 {
+        let mut z: [f32; 16] = [0.0; 16];
+        unsafe { stz(ridx, z.as_mut_ptr().into()) };
+        println!("{:?}", z);
+    }
 }
 
 /// WIP: Full matrix multiply.
 pub unsafe fn matmul(a: &[[f32; 16]; 16], b: &[[f32; 16]; 16]) -> [[f32; 16]; 16] {
-    unsafe { set() };
+    //unsafe { set() };
     for ridx in 0..8 {
-        unsafe { ldx(ridx, a[ridx as usize].as_ptr().into()) };
-        unsafe { ldy(ridx, b[ridx as usize].as_ptr().into()) };
-        unsafe { fma32(0, ridx as u16, ridx as u16) };
+        unsafe { ldx(ridx, a[ridx as usize].as_ptr()) };
+        unsafe { ldy(ridx, b[ridx as usize].as_ptr()) };
+        //unsafe { printX() };
+        //unsafe { printY() };
+        unsafe { fma32(0, 64*ridx as u16, 64*ridx as u16) };
+        //println!("ridx: {}", ridx);
+        //unsafe { printZ() };
     }
     for ridx in 0..8 {
         unsafe { ldx(ridx, a[8 + ridx as usize].as_ptr().into()) };
         unsafe { ldy(ridx, b[8 + ridx as usize].as_ptr().into()) };
-        unsafe { fma32(0, ridx as u16, ridx as u16) };
+        unsafe { fma32(0, 64*ridx as u16, 64*ridx as u16) };
+        //println!("ridx: {}", ridx);
+        //unsafe { printZ() };
     }
     let mut output = [[0.0; 16]; 16];
     for i in 0..16 {
         unsafe { stz((4*i) as u8, output[i].as_mut_ptr().into()) };
     }
-    unsafe { clr() };
+    //unsafe { clr() };
     output
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn ldstx() {
         unsafe { set() };
-        let x: [f32; 16] = (0..16).map(|i| i as f32).collect::<Vec<_>>().try_into().unwrap();
 
         // Check each of the 8 512-bit registers
         for ridx in 0..8 {
-            let mut xout: [f32; 16] = [0.0; 16];
+            let x: [f32; 16] = (0..16).map(|i| (16 * ridx + i) as f32).collect::<Vec<_>>().try_into().unwrap();
             unsafe { ldx(ridx, x.as_ptr().into()) };
+        }
+        for ridx in 0..8 {
+            let x: [f32; 16] = (0..16).map(|i| (16 * ridx + i) as f32).collect::<Vec<_>>().try_into().unwrap();
+            let mut xout: [f32; 16] = [0.0; 16];
             unsafe { stx(ridx, xout.as_mut_ptr().into()) };
             for i in 0..16 {
                 assert_eq!(xout[i], x[i]);
@@ -135,12 +173,15 @@ mod tests {
     #[test]
     fn ldstz() {
         unsafe { set() };
-        let x: [f32; 16] = (0..16).map(|i| i as f32).collect::<Vec<_>>().try_into().unwrap();
 
         // Check each of the 8 512-bit registers
         for ridx in 0..64 {
-            let mut xout: [f32; 16] = [0.0; 16];
+            let x: [f32; 16] = (0..16).map(|i| (16 * ridx as usize + i) as f32).collect::<Vec<_>>().try_into().unwrap();
             unsafe { ldz(ridx, x.as_ptr().into()) };
+        }
+        for ridx in 0..64 {
+            let x: [f32; 16] = (0..16).map(|i| (16 * ridx as usize + i) as f32).collect::<Vec<_>>().try_into().unwrap();
+            let mut xout: [f32; 16] = [0.0; 16];
             unsafe { stz(ridx, xout.as_mut_ptr().into()) };
             for i in 0..16 {
                 assert_eq!(xout[i], x[i]);
@@ -205,10 +246,41 @@ mod tests {
         let b: [[f32; 16]; 16] = (0..16).map(|i| {
             (0..16).map(|j| (i*j) as f32).collect::<Vec<_>>().try_into().unwrap()
         }).collect::<Vec<_>>().try_into().unwrap();
+        for i in 0..16 {
+            for j in 0..16 {
+                print!("{}, ", a[j][i]);
+            }
+            println!();
+        }
+        println!();
+        for i in 0..16 {
+            for j in 0..16 {
+                print!("{}, ", b[j][i]);
+            }
+            println!();
+        }
+        println!();
         let c = unsafe { matmul(&a, &b) };
         for i in 0..16 {
             println!("{:?}", c[i]);
         }
         assert_eq!(0, 0);
+    }
+
+    #[test]
+    fn perf_matmul() {
+        unsafe { set() };
+        let a = [[0.0; 16]; 16];
+        let mut cnt = 0;
+        let t0 = Instant::now();
+        while t0.elapsed().as_secs_f64() < 2.0 {
+            unsafe { matmul(&a, &a) };
+            cnt += 1;
+        }
+        let matmuls_per_sec = cnt as f64 / 2.0;
+        println!("{} 16x16 f32 matmuls per second", matmuls_per_sec);
+        let flops = (2 * 16_u64.pow(3)) as f64 * matmuls_per_sec;
+        println!("~{} GFLOPS", flops / 1e9);
+        unsafe { clr() };
     }
 }
