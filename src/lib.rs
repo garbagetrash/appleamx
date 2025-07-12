@@ -30,12 +30,12 @@ pub unsafe fn op<const OP: u8>(operand: u64) {
     }
 }
 
-pub unsafe fn ldx<T>(regidx: u8, ptr: *mut T) {
+pub unsafe fn ldx<T>(regidx: u8, ptr: *const T) {
     let gpr = (((regidx & 0x7) as u64) << 56) | (ptr as u64 & 0x00ff_ffff_ffff_ffff);
     op::<0>(gpr);
 }
 
-pub unsafe fn ldy<T>(regidx: u8, ptr: *mut T) {
+pub unsafe fn ldy<T>(regidx: u8, ptr: *const T) {
     let gpr = (((regidx & 0x7) as u64) << 56) | (ptr as u64 & 0x00ff_ffff_ffff_ffff);
     op::<1>(gpr);
 }
@@ -50,7 +50,7 @@ pub unsafe fn sty<T>(regidx: u8, ptr: *mut T) {
     op::<3>(gpr);
 }
 
-pub unsafe fn ldz<T>(zrow: u8, ptr: *mut T) {
+pub unsafe fn ldz<T>(zrow: u8, ptr: *const T) {
     let gpr = (((zrow & 0x3f) as u64) << 56) | (ptr as u64 & 0x00ff_ffff_ffff_ffff);
     op::<4>(gpr);
 }
@@ -73,6 +73,27 @@ pub unsafe fn fma32(zrow: u8, xoffset: u16, yoffset: u16) {
     op::<12>(gpr);
 }
 
+/// WIP: Full matrix multiply.
+pub unsafe fn matmul(a: &[[f32; 16]; 16], b: &[[f32; 16]; 16]) -> [[f32; 16]; 16] {
+    unsafe { set() };
+    for ridx in 0..8 {
+        unsafe { ldx(ridx, a[ridx as usize].as_ptr().into()) };
+        unsafe { ldy(ridx, b[ridx as usize].as_ptr().into()) };
+        unsafe { fma32(0, ridx as u16, ridx as u16) };
+    }
+    for ridx in 0..8 {
+        unsafe { ldx(ridx, a[8 + ridx as usize].as_ptr().into()) };
+        unsafe { ldy(ridx, b[8 + ridx as usize].as_ptr().into()) };
+        unsafe { fma32(0, ridx as u16, ridx as u16) };
+    }
+    let mut output = [[0.0; 16]; 16];
+    for i in 0..16 {
+        unsafe { stz((4*i) as u8, output[i].as_mut_ptr().into()) };
+    }
+    unsafe { clr() };
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,12 +101,12 @@ mod tests {
     #[test]
     fn ldstx() {
         unsafe { set() };
-        let mut x: [f32; 16] = (0..16).map(|i| i as f32).collect::<Vec<_>>().try_into().unwrap();
+        let x: [f32; 16] = (0..16).map(|i| i as f32).collect::<Vec<_>>().try_into().unwrap();
 
         // Check each of the 8 512-bit registers
         for ridx in 0..8 {
             let mut xout: [f32; 16] = [0.0; 16];
-            unsafe { ldx(ridx, x.as_mut_ptr().into()) };
+            unsafe { ldx(ridx, x.as_ptr().into()) };
             unsafe { stx(ridx, xout.as_mut_ptr().into()) };
             for i in 0..16 {
                 assert_eq!(xout[i], x[i]);
@@ -97,12 +118,12 @@ mod tests {
     #[test]
     fn ldsty() {
         unsafe { set() };
-        let mut x: [f32; 16] = (0..16).map(|i| i as f32).collect::<Vec<_>>().try_into().unwrap();
+        let x: [f32; 16] = (0..16).map(|i| i as f32).collect::<Vec<_>>().try_into().unwrap();
 
         // Check each of the 8 512-bit registers
         for ridx in 0..8 {
             let mut xout: [f32; 16] = [0.0; 16];
-            unsafe { ldy(ridx, x.as_mut_ptr().into()) };
+            unsafe { ldy(ridx, x.as_ptr().into()) };
             unsafe { sty(ridx, xout.as_mut_ptr().into()) };
             for i in 0..16 {
                 assert_eq!(xout[i], x[i]);
@@ -114,12 +135,12 @@ mod tests {
     #[test]
     fn ldstz() {
         unsafe { set() };
-        let mut x: [f32; 16] = (0..16).map(|i| i as f32).collect::<Vec<_>>().try_into().unwrap();
+        let x: [f32; 16] = (0..16).map(|i| i as f32).collect::<Vec<_>>().try_into().unwrap();
 
         // Check each of the 8 512-bit registers
         for ridx in 0..64 {
             let mut xout: [f32; 16] = [0.0; 16];
-            unsafe { ldz(ridx, x.as_mut_ptr().into()) };
+            unsafe { ldz(ridx, x.as_ptr().into()) };
             unsafe { stz(ridx, xout.as_mut_ptr().into()) };
             for i in 0..16 {
                 assert_eq!(xout[i], x[i]);
@@ -132,11 +153,11 @@ mod tests {
     fn _fma32() {
         unsafe { set() };
 
-        let mut x: [f32; 16] = (0..16).map(|i| i as f32).collect::<Vec<_>>().try_into().unwrap();
-        unsafe { ldx(0, x.as_mut_ptr().into()) };
+        let x: [f32; 16] = (0..16).map(|i| i as f32).collect::<Vec<_>>().try_into().unwrap();
+        unsafe { ldx(0, x.as_ptr().into()) };
 
-        let mut y: [f32; 16] = (0..16).map(|i| i as f32).collect::<Vec<_>>().try_into().unwrap();
-        unsafe { ldy(0, y.as_mut_ptr().into()) };
+        let y: [f32; 16] = (0..16).map(|i| i as f32).collect::<Vec<_>>().try_into().unwrap();
+        unsafe { ldy(0, y.as_ptr().into()) };
 
         // Only 2 lsbs of first parameter (ZRow) matter. If you consider that output of a 16
         // element outer product is 16x16, and we have 64*16 values that can be stored in all of Z,
@@ -144,16 +165,50 @@ mod tests {
         // which to dump the matrix into. The access stride is 4 from stz. (so with ZRow = 1 in
         // fma32, stz can get first row from 1, 2nd from 5, 3rd from 9, ect....).
         unsafe { fma32(0, 0, 0) };
-        unsafe { fma32(1, 4, 0) };
-        unsafe { fma32(2, 0, 8) };
-        unsafe { fma32(3, 4, 4) };
-        for i in 0..64 {
+        for i in 0..16 {
             let mut z: [f32; 16] = [0.0; 16];
-            unsafe { stz(i as u8, z.as_mut_ptr().into()) };
-            println!("i: {}, z: {:?}", i, z);
+            unsafe { stz((4*i) as u8, z.as_mut_ptr().into()) };
+            println!("{}: {:?}", i, z);
         }
+        println!();
+        unsafe { fma32(1, 4, 0) };
+        for i in 0..16 {
+            let mut z: [f32; 16] = [0.0; 16];
+            unsafe { stz((4*i + 1) as u8, z.as_mut_ptr().into()) };
+            println!("{}: {:?}", i, z);
+        }
+        println!();
+        unsafe { fma32(2, 0, 8) };
+        for i in 0..16 {
+            let mut z: [f32; 16] = [0.0; 16];
+            unsafe { stz((4*i + 2) as u8, z.as_mut_ptr().into()) };
+            println!("{}: {:?}", i, z);
+        }
+        println!();
+        unsafe { fma32(3, 4, 4) };
+        for i in 0..16 {
+            let mut z: [f32; 16] = [0.0; 16];
+            unsafe { stz((4*i + 3) as u8, z.as_mut_ptr().into()) };
+            println!("{}: {:?}", i, z);
+        }
+        println!();
 
         unsafe { clr() };
+        assert_eq!(0, 0);
+    }
+
+    #[test]
+    fn matrix_multiply() {
+        let a: [[f32; 16]; 16] = (0..16).map(|i| {
+            (0..16).map(|j| (i*j) as f32).collect::<Vec<_>>().try_into().unwrap()
+        }).collect::<Vec<_>>().try_into().unwrap();
+        let b: [[f32; 16]; 16] = (0..16).map(|i| {
+            (0..16).map(|j| (i*j) as f32).collect::<Vec<_>>().try_into().unwrap()
+        }).collect::<Vec<_>>().try_into().unwrap();
+        let c = unsafe { matmul(&a, &b) };
+        for i in 0..16 {
+            println!("{:?}", c[i]);
+        }
         assert_eq!(0, 0);
     }
 }
