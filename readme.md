@@ -1,5 +1,5 @@
-amxrs
-=====
+appleamx
+========
 
 Apples SME precursor AMX instrutions. I have an M1 MBA and will be prioritizing
 for that particular chip.
